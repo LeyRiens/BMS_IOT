@@ -8,9 +8,6 @@
 #define BLOCK_COUNT 4
 #define BUFFER_COUNT 4
 
-extern buffer_pointer_t g_buffer_write;
-extern buffer_pointer_t g_buffer_read;
-
 
 
 typedef enum {
@@ -50,6 +47,10 @@ typedef struct{
     uint8_t block_index;
     uint8_t frame_index;
 }buffer_pointer_t;
+
+extern buffer_pointer_t g_buffer_write;
+extern buffer_pointer_t g_buffer_read;
+
 
 
 void finalizeBuffer(buffer_t *buffer);

@@ -1,0 +1,1 @@
+stm32_can_to_usart\startup_stm32f103xb.o: startup_stm32f103xb.s
