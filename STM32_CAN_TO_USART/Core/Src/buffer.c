@@ -4,8 +4,6 @@
 
 static buffer_t g_buffers[BUFFER_COUNT];
 
-
-
 static uint16_t g_batch_sequence;
 
 
@@ -31,7 +29,9 @@ buffer_pointer_t g_buffer_read=
 
 void updateBuffer(buffer_pointer_t *pointer)
 {
-   pointer->current_buffer = pointer->current_buffer->next_buffer;
+    pointer->current_buffer = pointer->current_buffer->next_buffer;
+    g_buffer_write.block_index = 0u;
+    g_buffer_write.frame_index = 0u;
 }
 
 void updateBlock(buffer_pointer_t *pointer)
@@ -56,18 +56,9 @@ void updateFrame(buffer_pointer_t *pointer)
     }
 }
 
-/*
-强行把一个数组搞成环hhh
-*/
 
-void refreshCANRecieve(buffer_pointer_t *pointer)
-{
-    pointer->current_buffer = pointer->current_buffer->next_buffer;
-   
-    pointer->block_index = 0;
-    
-    pointer->frame_index = 0;
-}
+
+
 
 void finalizeBuffer(buffer_t *buffer)
 {
@@ -82,12 +73,8 @@ void finalizeBuffer(buffer_t *buffer)
 
     g_batch_sequence++;
 
-    updateBuffer(&g_buffer_write);
+   updateBuffer(&g_buffer_write);
 }
-
-
-
-
 
 void bufferInit(void)
 {

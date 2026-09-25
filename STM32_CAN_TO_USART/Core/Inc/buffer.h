@@ -4,15 +4,18 @@
 #include <stdint.h>
 
 #define FRAME_LENGTH 8
-#define FRAME_COUNT 30
+#define FRAME_COUNT 32
 #define BLOCK_COUNT 4
 #define BUFFER_COUNT 4
+
+extern buffer_pointer_t g_buffer_write;
+extern buffer_pointer_t g_buffer_read;
+
 
 
 typedef enum {
     BUFFER_READY=0,
-    BUFFER_FILLING,
-    BUFFER_SENDING,
+    BUFFER_USING,
     BUFFER_EMPTY
 } buffer_state_t;
 
@@ -49,12 +52,13 @@ typedef struct{
 }buffer_pointer_t;
 
 
-
+void finalizeBuffer(buffer_t *buffer);
 
 void bufferInit(void);
 
 buffer_state_t getBufferState(buffer_t *buffer);
 
+void updateFrame(buffer_pointer_t *pointer);
 
 
 #endif //BUFFER_H
