@@ -2,6 +2,7 @@ stm32_can_to_usart\can_user.o: ..\Core\Src\can_user.c
 stm32_can_to_usart\can_user.o: ../Core/Inc/can_user.h
 stm32_can_to_usart\can_user.o: ../Core/Inc/buffer.h
 stm32_can_to_usart\can_user.o: D:\Keil5\ARM\ARMCC\Bin\..\include\stdint.h
+stm32_can_to_usart\can_user.o: ../Core/Inc/config.h
 stm32_can_to_usart\can_user.o: ../Core/Inc/can.h
 stm32_can_to_usart\can_user.o: ../Core/Inc/main.h
 stm32_can_to_usart\can_user.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h

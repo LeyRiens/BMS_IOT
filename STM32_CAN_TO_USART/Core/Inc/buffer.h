@@ -3,16 +3,15 @@
 
 #include <stdint.h>
 
-#define FRAME_LENGTH 8
-#define FRAME_COUNT 32
-#define BLOCK_COUNT 4
-#define BUFFER_COUNT 4
+#include "config.h"
 
+#define DLC_8 8u
 
 
 typedef enum {
     BUFFER_READY=0,
-    BUFFER_USING,
+    BUFFER_FILLING,
+    BUFFER_SENDING,
     BUFFER_EMPTY
 } buffer_state_t;
 
@@ -28,7 +27,6 @@ block_t是usart单次发送的数据，大小接近mqtt单次上传的上限
 
 typedef struct{
     uint32_t id;
-    uint8_t dlc;
     uint8_t data[FRAME_LENGTH];
 }frame_t;
 

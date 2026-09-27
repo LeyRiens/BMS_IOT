@@ -26,6 +26,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "can_user.h"
+#include "mqtt_at.h"
+#include "state_user.h"
 
 /* USER CODE END Includes */
 
@@ -93,11 +95,27 @@ int main(void)
   MX_DMA_Init();
   MX_CAN_Init();
   MX_USART1_UART_Init();
+  
+  
+  
+
   /* USER CODE BEGIN 2 */
-  if (CAN_UserInit() != HAL_OK)
-  {
-    Error_Handler();
+
+  bufferInit();           
+  
+  
+  if (MQTTAT_Init() != HAL_OK) {
+      Error_Handler();
   }
+  
+  
+  StateUser_Init();
+  if (CAN_UserInit() != HAL_OK) {
+      Error_Handler();
+  }
+
+
+
 
   /* USER CODE END 2 */
 
@@ -108,6 +126,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    MQTTAT_Poll();
+    StateUser_Poll();
   }
   /* USER CODE END 3 */
 }
@@ -185,3 +205,4 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
+

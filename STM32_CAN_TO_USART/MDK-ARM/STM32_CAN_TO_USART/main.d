@@ -33,3 +33,7 @@ stm32_can_to_usart\main.o: ../Core/Inc/usart.h
 stm32_can_to_usart\main.o: ../Core/Inc/gpio.h
 stm32_can_to_usart\main.o: ../Core/Inc/can_user.h
 stm32_can_to_usart\main.o: ../Core/Inc/buffer.h
+stm32_can_to_usart\main.o: ../Core/Inc/config.h
+stm32_can_to_usart\main.o: ../Core/Inc/mqtt_at.h
+stm32_can_to_usart\main.o: ../Core/Inc/state_user.h
+stm32_can_to_usart\main.o: ../Core/Inc/led.h
