@@ -7,11 +7,6 @@
 
 
 
-extern buffer_pointer_t g_buffer_write;
-extern buffer_pointer_t g_buffer_read;
-
-
-
 HAL_StatusTypeDef CAN_UserInit(void);
 
 

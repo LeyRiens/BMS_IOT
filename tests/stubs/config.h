@@ -1,0 +1,9 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+#define HEAD_CAN_ID 0x120U
+#define TAIL_CAN_ID 0x1A0U
+#define CAN_FRAME_DATA_SIZE 8U
+#define CAN_FRAME_COUNT 126U
+#define CAN_BUFFER_COUNT 4U
+#define CAN_BLOCK_TX_SIZE 1514U
+#endif

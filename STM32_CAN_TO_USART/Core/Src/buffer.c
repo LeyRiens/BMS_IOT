@@ -1,105 +1,121 @@
 #include "buffer.h"
+#include "config.h"
+#include "stm32f1xx_hal.h"
+#include <stddef.h>
+#include <string.h>
 
+typedef char FrameLayoutCheck[(sizeof(CAN_Frame_t) == 12U) ? 1 : -1];
+typedef char BufferCountCheck[(CAN_BUFFER_COUNT == 4U) ? 1 : -1];
+typedef char BlockLayoutCheck[(offsetof(CAN_Block_t, block_seq) == 1512U) ? 1 : -1];
+typedef char TxLengthCheck[(CAN_BLOCK_TX_SIZE == 1514U) ? 1 : -1];
 
+CAN_Block_t can_block[CAN_BUFFER_COUNT];
+volatile uint8_t write_idx;
+volatile uint8_t latest_ready_idx;
+volatile uint16_t global_block_seq;
+volatile int8_t tx_block_idx;
+volatile uint32_t can_invalid_block_count;
+volatile uint32_t can_tx_collision_count;
+static volatile uint8_t s_receiving;
+static volatile uint8_t s_discard;
+static volatile uint8_t s_count;
+static volatile uint8_t s_latest_valid;
+static volatile uint32_t s_generation;
 
-static buffer_t g_buffers[BUFFER_COUNT];
-
-static uint16_t g_batch_sequence;
-
-
-
-buffer_pointer_t g_buffer_write=
+void Buffer_Init(void)
 {
-    .current_buffer=&g_buffers[0],
-    .block_index=0u,
-    .frame_index=0u
-};
-
-buffer_pointer_t g_buffer_read=
-{
-    .current_buffer=&g_buffers[0],
-    .block_index=0u,
-    .frame_index=0u
-};
-
-
-/*
-每一帧写入或读取后调用函数updateFrame更新下一块要写入的frame
-*/
-
-void updateBuffer(buffer_pointer_t *pointer)
-{
-    pointer->current_buffer = pointer->current_buffer->next_buffer;
-    g_buffer_write.block_index = 0u;
-    g_buffer_write.frame_index = 0u;
+    write_idx = 0U;
+    latest_ready_idx = CAN_NO_BLOCK;
+    global_block_seq = 0U;
+    tx_block_idx = -1;
+    can_invalid_block_count = 0U;
+    can_tx_collision_count = 0U;
+    s_receiving = 0U;
+    s_discard = 0U;
+    s_count = 0U;
+    s_latest_valid = 0U;
+    s_generation = 0U;
 }
 
-void updateBlock(buffer_pointer_t *pointer)
+static void Buffer_Advance(void)
 {
-    pointer->block_index++;
-   
-    if(pointer->block_index >= BLOCK_COUNT)
+    write_idx = (uint8_t)((write_idx + 1U) & 3U);
+    s_receiving = 0U;
+    s_discard = 0U;
+    s_count = 0U;
+}
+
+/* Called from CAN FIFO0 IRQ. Only an exact 126-frame HEAD..TAIL block is published. */
+void Buffer_ReceiveFrame(uint32_t id, const uint8_t data[8])
+{
+    CAN_Frame_t *frame;
+    if ((HEAD_CAN_ID > 0x7FFU) || (TAIL_CAN_ID > 0x7FFU) ||
+        (HEAD_CAN_ID == TAIL_CAN_ID)) return;
+
+    if (id == HEAD_CAN_ID)
     {
-        pointer->block_index = 0;
+        if (s_receiving != 0U) can_invalid_block_count++;
+        s_receiving = 1U;
+        s_count = 0U;
+        s_discard = (tx_block_idx == (int8_t)write_idx) ? 1U : 0U;
+        if (s_discard != 0U) can_tx_collision_count++;
+        if ((s_latest_valid != 0U) && (latest_ready_idx == write_idx))
+            s_latest_valid = 0U;
     }
-}
-
-void updateFrame(buffer_pointer_t *pointer)
-{
-    pointer->frame_index++;
-    
-    if(pointer->frame_index >= FRAME_COUNT)
+    if (s_receiving == 0U) return;
+    if ((s_discard == 0U) && (s_count < CAN_FRAME_COUNT))
     {
-        pointer->frame_index = 0;
-       
-        updateBlock(pointer);
+        frame = &can_block[write_idx].frame[s_count];
+        frame->id = id;
+        memcpy(frame->data, data, CAN_FRAME_DATA_SIZE);
     }
-}
-
-
-
-
-
-void finalizeBuffer(buffer_t *buffer)
-{
-    block_t *last_block =
-        &buffer->block[BLOCK_COUNT - 1u];
-
-    last_block->frame[FRAME_COUNT - 2u].data[0] =
-        (uint8_t)((g_batch_sequence >> 8) & 0xFFu);
-
-    last_block->frame[FRAME_COUNT - 1u].data[0] =
-        (uint8_t)(g_batch_sequence & 0xFFu);
-
-    g_batch_sequence++;
-
-   updateBuffer(&g_buffer_write);
-}
-
-void bufferInit(void)
-{
-    uint8_t i;
-    uint8_t next_index;
-
-    for (i = 0u; i < BUFFER_COUNT; i++)
+    s_count++;
+    if (id == TAIL_CAN_ID)
     {
-        next_index = i + 1u;
-
-        if (next_index == BUFFER_COUNT)
+        if ((s_discard == 0U) && (s_count == CAN_FRAME_COUNT))
         {
-            next_index = 0u;
+            can_block[write_idx].block_seq = global_block_seq++;
+            latest_ready_idx = write_idx;
+            s_generation++;
+            s_latest_valid = 1U;
         }
-
-        g_buffers[i].state =
-            BUFFER_EMPTY;
-
-        g_buffers[i].next_buffer =
-            &g_buffers[next_index];
+        else can_invalid_block_count++;
+        Buffer_Advance();
     }
+    else if (s_count >= CAN_FRAME_COUNT) s_discard = 1U;
 }
 
-buffer_state_t getBufferState(buffer_t *buffer)
+uint8_t Buffer_HasNew(uint32_t after_generation)
 {
-    return buffer->state;
+    uint8_t result;
+    uint32_t irq = __get_PRIMASK();
+    __disable_irq();
+    result = (s_latest_valid != 0U) && (s_generation != after_generation);
+    __set_PRIMASK(irq);
+    return result;
 }
 
+uint8_t Buffer_PinLatest(uint32_t after_generation, uint8_t *index, uint32_t *generation)
+{
+    uint8_t result = 0U;
+    uint32_t irq = __get_PRIMASK();
+    __disable_irq();
+    if ((index != NULL) && (generation != NULL) && (tx_block_idx < 0) &&
+        (s_latest_valid != 0U) && (s_generation != after_generation))
+    {
+        *index = latest_ready_idx;
+        *generation = s_generation;
+        tx_block_idx = (int8_t)latest_ready_idx;
+        result = 1U;
+    }
+    __set_PRIMASK(irq);
+    return result;
+}
+
+void Buffer_Unpin(void)
+{
+    uint32_t irq = __get_PRIMASK();
+    __disable_irq();
+    tx_block_idx = -1;
+    __set_PRIMASK(irq);
+}

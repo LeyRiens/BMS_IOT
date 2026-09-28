@@ -1,278 +1,233 @@
 #include "mqtt_at.h"
-
+#include "buffer.h"
 #include "config.h"
 #include "usart.h"
-
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
-#define MQTTAT_RX_SIZE             256U
-#define MQTTAT_TX_SIZE             256U
-#define MQTTAT_LINE_SIZE           256U
-#define MQTTAT_COMMAND_TIMEOUT     3000U
-#define MQTTAT_WIFI_TIMEOUT        30000U
-#define MQTTAT_MQTT_TIMEOUT        60000U
-#define MQTTAT_TX_TIMEOUT          1000U
-
-typedef enum
-{
-    EXPECT_OK = 0U,
-    EXPECT_WIFI,
-    EXPECT_MQTT_CONNECTED
-} ExpectedResponse_t;
-
-static UART_HandleTypeDef *s_uart;
-static uint8_t s_rx_buffer[MQTTAT_RX_SIZE];
-static uint16_t s_rx_read;
-static char s_line[MQTTAT_LINE_SIZE];
-static uint16_t s_line_length;
-static uint8_t s_line_overflow;
-static char s_tx_buffer[MQTTAT_TX_SIZE];
-static volatile MQTTAT_Result_t s_result;
-static volatile uint8_t s_command_active;
-static ExpectedResponse_t s_expected;
-static uint8_t s_saw_ok;
-static uint8_t s_saw_wifi_ip;
-static uint32_t s_start_tick;
+typedef enum { KIND_OK, KIND_CONNECT, KIND_PUBLISH } Kind_t;
+typedef enum { PHASE_IDLE, PHASE_COMMAND, PHASE_PROMPT, PHASE_DMA, PHASE_RESULT } Phase_t;
+static uint8_t s_rx[MQTT_AT_RX_SIZE];
+static uint16_t s_read;
+static char s_line[MQTT_AT_LINE_SIZE];
+static uint16_t s_line_len;
+static uint8_t s_overflow;
+static char s_command[MQTT_AT_COMMAND_SIZE];
+static volatile uint8_t s_tx_done;
+static volatile uint8_t s_tx_error;
+static volatile uint8_t s_dma_active;
+static volatile uint8_t s_connected;
+static MQTTAT_Result_t s_result;
+static Kind_t s_kind;
+static Phase_t s_phase;
+static uint8_t s_pub_ok;
+static uint32_t s_started;
 static uint32_t s_timeout;
 
-static HAL_StatusTypeDef MQTTAT_StartCommand(
-    ExpectedResponse_t expected,
-    uint32_t timeout,
-    const char *format,
-    ...)
+static void Finish(MQTTAT_Result_t result)
 {
-    va_list args;
-    HAL_StatusTypeDef status;
-    int length;
-
-    if ((s_uart == NULL) || (s_command_active != 0U))
-    {
-        return HAL_BUSY;
-    }
-
-    va_start(args, format);
-    length = vsnprintf(s_tx_buffer, sizeof(s_tx_buffer) - 2U, format, args);
-    va_end(args);
-
-    if ((length < 0) || (length >= (int)(sizeof(s_tx_buffer) - 2U)))
-    {
-        return HAL_ERROR;
-    }
-
-    s_tx_buffer[length++] = '\r';
-    s_tx_buffer[length++] = '\n';
-
-    s_expected = expected;
-    s_saw_ok = 0U;
-    s_saw_wifi_ip = 0U;
-    s_line_length = 0U;
-    s_line_overflow = 0U;
-    s_timeout = timeout;
-    s_result = MQTTAT_RESULT_PENDING;
-    s_command_active = 1U;
-
-    /* Polling TX avoids requiring a USART TC IRQ for HAL UART DMA completion. */
-    status = HAL_UART_Transmit(
-        s_uart,
-        (uint8_t *)s_tx_buffer,
-        (uint16_t)length,
-        MQTTAT_TX_TIMEOUT);
-    if (status != HAL_OK)
-    {
-        s_command_active = 0U;
-        s_result = MQTTAT_RESULT_IDLE;
-        return status;
-    }
-
-    s_start_tick = HAL_GetTick();
-    return HAL_OK;
+    s_phase = PHASE_IDLE;
+    s_result = result;
 }
 
-static uint8_t MQTTAT_HasPrefix(const char *text, const char *prefix)
+static uint8_t Prefix(const char *line, const char *prefix)
 {
-    return (uint8_t)(strncmp(text, prefix, strlen(prefix)) == 0);
+    return (uint8_t)(strncmp(line, prefix, strlen(prefix)) == 0);
 }
 
-static void MQTTAT_ProcessLine(const char *line)
+static void ProcessLine(const char *line)
 {
-    if ((s_command_active == 0U) || (line[0] == '\0'))
+    if (Prefix(line, "+MQTTDISCONNECTED:0")) s_connected = 0U;
+    if (Prefix(line, "+MQTTCONNECTED:0")) s_connected = 1U;
+    if ((s_phase == PHASE_IDLE) || (line[0] == '\0')) return;
+    if ((strcmp(line, "ERROR") == 0) || (strcmp(line, "FAIL") == 0) ||
+        Prefix(line, "ERROR:") || Prefix(line, "ERR CODE:") ||
+        Prefix(line, "busy ") || Prefix(line, "+MQTTPUB:FAIL"))
     {
+        Finish(MQTTAT_RESULT_ERROR);
         return;
     }
-
-    if ((strcmp(line, "ERROR") == 0) ||
-        (strcmp(line, "FAIL") == 0) ||
-        MQTTAT_HasPrefix(line, "ERROR:") ||
-        MQTTAT_HasPrefix(line, "ERR CODE:") ||
-        MQTTAT_HasPrefix(line, "busy "))
+    if (s_kind == KIND_PUBLISH)
     {
-        s_command_active = 0U;
-        s_result = MQTTAT_RESULT_ERROR;
-        return;
+        if (Prefix(line, "+MQTTPUB:OK"))
+        {
+            s_pub_ok = 1U;
+            if (s_phase == PHASE_RESULT) Finish(MQTTAT_RESULT_OK);
+        }
     }
-
-    if (strcmp(line, "WIFI GOT IP") == 0)
-    {
-        s_saw_wifi_ip = 1U;
-    }
-    if (strcmp(line, "OK") == 0)
-    {
-        s_saw_ok = 1U;
-    }
-
-    if (((s_expected == EXPECT_OK) && (s_saw_ok != 0U)) ||
-        ((s_expected == EXPECT_WIFI) &&
-         (s_saw_ok != 0U) && (s_saw_wifi_ip != 0U)) ||
-        ((s_expected == EXPECT_MQTT_CONNECTED) &&
-         MQTTAT_HasPrefix(line, "+MQTTCONNECTED:0")))
-    {
-        s_command_active = 0U;
-        s_result = MQTTAT_RESULT_OK;
-    }
+    else if ((s_kind == KIND_OK) && (strcmp(line, "OK") == 0))
+        Finish(MQTTAT_RESULT_OK);
+    else if ((s_kind == KIND_CONNECT) && Prefix(line, "+MQTTCONNECTED:0"))
+        Finish(MQTTAT_RESULT_OK);
 }
 
-static void MQTTAT_ProcessByte(uint8_t byte)
+static void ProcessByte(uint8_t byte)
 {
+    if ((s_phase == PHASE_PROMPT) && (byte == '>'))
+    {
+        s_phase = PHASE_COMMAND;
+        s_result = MQTTAT_RESULT_PROMPT;
+        s_line_len = 0U;
+        return;
+    }
     if ((byte == '\r') || (byte == '\n'))
     {
-        if ((s_line_overflow == 0U) && (s_line_length != 0U))
+        if ((s_overflow == 0U) && (s_line_len != 0U))
         {
-            s_line[s_line_length] = '\0';
-            MQTTAT_ProcessLine(s_line);
+            s_line[s_line_len] = '\0';
+            ProcessLine(s_line);
         }
-        s_line_length = 0U;
-        s_line_overflow = 0U;
+        s_line_len = 0U;
+        s_overflow = 0U;
         return;
     }
+    if ((byte == 0U) || (s_overflow != 0U)) return;
+    if (s_line_len >= MQTT_AT_LINE_SIZE - 1U) { s_overflow = 1U; return; }
+    s_line[s_line_len++] = (char)byte;
+}
 
-    if ((byte == '\0') || (s_line_overflow != 0U))
-    {
-        return;
-    }
-
-    if (s_line_length >= (uint16_t)(sizeof(s_line) - 1U))
-    {
-        s_line_overflow = 1U;
-        return;
-    }
-
-    s_line[s_line_length++] = (char)byte;
+static HAL_StatusTypeDef Start(Kind_t kind, uint32_t timeout, const char *format, ...)
+{
+    va_list args;
+    int length;
+    HAL_StatusTypeDef status;
+    if (s_result != MQTTAT_RESULT_IDLE) return HAL_BUSY;
+    va_start(args, format);
+    length = vsnprintf(s_command, MQTT_AT_COMMAND_SIZE - 2U, format, args);
+    va_end(args);
+    if ((length < 0) || (length >= (int)(MQTT_AT_COMMAND_SIZE - 2U))) return HAL_ERROR;
+    s_command[length++] = '\r';
+    s_command[length++] = '\n';
+    s_kind = kind;
+    s_pub_ok = 0U;
+    s_line_len = 0U;
+    s_overflow = 0U;
+    s_timeout = timeout;
+    s_started = HAL_GetTick();
+    s_phase = (kind == KIND_PUBLISH) ? PHASE_PROMPT : PHASE_COMMAND;
+    s_result = MQTTAT_RESULT_PENDING;
+    status = HAL_UART_Transmit(&huart1, (uint8_t *)s_command, (uint16_t)length,
+                               MQTT_AT_COMMAND_TX_TIMEOUT_MS);
+    if (status != HAL_OK) { s_phase = PHASE_IDLE; s_result = MQTTAT_RESULT_IDLE; }
+    return status;
 }
 
 HAL_StatusTypeDef MQTTAT_Init(void)
 {
-    s_uart = &huart1;
-    s_rx_read = 0U;
-    s_line_length = 0U;
-    s_line_overflow = 0U;
+    s_read = 0U;
+    s_line_len = 0U;
+    s_overflow = 0U;
+    s_tx_done = 0U;
+    s_tx_error = 0U;
+    s_dma_active = 0U;
+    s_connected = 0U;
+    s_phase = PHASE_IDLE;
     s_result = MQTTAT_RESULT_IDLE;
-    s_command_active = 0U;
-
-    if (s_uart->hdmarx == NULL)
-    {
-        return HAL_ERROR;
-    }
-
-    return HAL_UART_Receive_DMA(s_uart, s_rx_buffer, (uint16_t)sizeof(s_rx_buffer));
+    if (huart1.hdmarx == NULL) return HAL_ERROR;
+    /* HAL UART normal-mode DMA TX finishes on USART TC, after DMA IRQ. */
+    HAL_NVIC_SetPriority(USART1_IRQn, MQTT_AT_USART_IRQ_PRIORITY, 0U);
+    HAL_NVIC_EnableIRQ(USART1_IRQn);
+    return HAL_UART_Receive_DMA(&huart1, s_rx, MQTT_AT_RX_SIZE);
 }
 
 void MQTTAT_Poll(void)
 {
-    uint16_t write_index;
-    uint16_t remaining;
-
-    if ((s_uart == NULL) || (s_uart->hdmarx == NULL))
+    uint16_t end;
+    uint8_t circular;
+    if (huart1.hdmarx == NULL) return;
+    circular = (huart1.hdmarx->Init.Mode == DMA_CIRCULAR) ? 1U : 0U;
+    end = (uint16_t)(MQTT_AT_RX_SIZE - __HAL_DMA_GET_COUNTER(huart1.hdmarx));
+    if ((circular != 0U) && (end == MQTT_AT_RX_SIZE)) end = 0U;
+    while (s_read != end)
     {
-        return;
+        ProcessByte(s_rx[s_read]);
+        s_read++;
+        if ((circular != 0U) && (s_read == MQTT_AT_RX_SIZE)) s_read = 0U;
     }
-
-    remaining = (uint16_t)__HAL_DMA_GET_COUNTER(s_uart->hdmarx);
-    write_index = (uint16_t)(sizeof(s_rx_buffer) - remaining);
-    if (write_index >= (uint16_t)sizeof(s_rx_buffer))
+    if ((circular == 0U) && (end == MQTT_AT_RX_SIZE))
     {
-        write_index = 0U;
+        if (HAL_UART_Receive_DMA(&huart1, s_rx, MQTT_AT_RX_SIZE) == HAL_OK)
+            s_read = 0U;
     }
-
-    while (s_rx_read != write_index)
+    if ((s_phase == PHASE_DMA) && (s_tx_error != 0U))
+        Finish(MQTTAT_RESULT_ERROR);
+    else if ((s_phase == PHASE_DMA) && (s_tx_done != 0U))
     {
-        MQTTAT_ProcessByte(s_rx_buffer[s_rx_read]);
-        s_rx_read++;
-        if (s_rx_read >= (uint16_t)sizeof(s_rx_buffer))
-        {
-            s_rx_read = 0U;
-        }
+        s_dma_active = 0U;
+        s_phase = PHASE_RESULT;
+        if (s_pub_ok != 0U) Finish(MQTTAT_RESULT_OK);
     }
-
-    if ((s_command_active != 0U) &&
-        ((HAL_GetTick() - s_start_tick) >= s_timeout))
-    {
-        s_command_active = 0U;
-        s_result = MQTTAT_RESULT_TIMEOUT;
-    }
+    if ((s_phase != PHASE_IDLE) && ((HAL_GetTick() - s_started) >= s_timeout))
+        Finish(MQTTAT_RESULT_TIMEOUT);
 }
 
-MQTTAT_Result_t MQTTAT_GetResult(void)
-{
-    return s_result;
-}
-
+MQTTAT_Result_t MQTTAT_GetResult(void) { return s_result; }
 void MQTTAT_ClearResult(void)
 {
-    if (s_command_active == 0U)
+    if (s_phase == PHASE_IDLE) s_result = MQTTAT_RESULT_IDLE;
+}
+uint8_t MQTTAT_IsConnected(void) { return s_connected; }
+uint8_t MQTTAT_TakeTxDone(void)
+{
+    uint8_t done;
+    uint32_t irq = __get_PRIMASK();
+    __disable_irq();
+    done = s_tx_done;
+    s_tx_done = 0U;
+    __set_PRIMASK(irq);
+    return done;
+}
+HAL_StatusTypeDef MQTTAT_Abort(void)
+{
+    if (s_dma_active != 0U)
     {
-        s_result = MQTTAT_RESULT_IDLE;
+        if (HAL_UART_AbortTransmit(&huart1) != HAL_OK) return HAL_ERROR;
+        s_dma_active = 0U;
     }
+    s_phase = PHASE_IDLE;
+    s_result = MQTTAT_RESULT_IDLE;
+    s_tx_done = 0U;
+    s_tx_error = 0U;
+    return HAL_OK;
 }
 
 HAL_StatusTypeDef MQTTAT_Test(void)
-{
-    return MQTTAT_StartCommand(EXPECT_OK, MQTTAT_COMMAND_TIMEOUT, "AT");
-}
-
+{ return Start(KIND_OK, MQTT_AT_COMMAND_TIMEOUT_MS, "AT"); }
 HAL_StatusTypeDef MQTTAT_SetWifiModeStation(void)
-{
-    return MQTTAT_StartCommand(EXPECT_OK, MQTTAT_COMMAND_TIMEOUT, "AT+CWMODE=1");
-}
-
+{ return Start(KIND_OK, MQTT_AT_COMMAND_TIMEOUT_MS, "AT+CWMODE=1"); }
 HAL_StatusTypeDef MQTTAT_JoinWifi(void)
-{
-    return MQTTAT_StartCommand(
-        EXPECT_WIFI,
-        MQTTAT_WIFI_TIMEOUT,
-        "AT+CWJAP=\"%s\",\"%s\"",
-        SSID,
-        PASSWORD);
-}
-
+{ return Start(KIND_OK, MQTT_AT_WIFI_TIMEOUT_MS, "AT+CWJAP=\"%s\",\"%s\"", SSID, PASSWORD); }
 HAL_StatusTypeDef MQTTAT_SetMqttUserConfig(void)
-{
-    return MQTTAT_StartCommand(
-        EXPECT_OK,
-        MQTTAT_COMMAND_TIMEOUT,
-        "AT+MQTTUSERCFG=0,%u,\"%s\",\"%s\",\"%s\",0,0,\"\"",
-        MQTT_SCHEME,
-        MQTT_CLIENT_ID,
-        MQTT_USERNAME,
-        MQTT_PASSWORD);
-}
-
+{ return Start(KIND_OK, MQTT_AT_COMMAND_TIMEOUT_MS, "AT+MQTTUSERCFG=0,%u,\"%s\",\"%s\",\"%s\",0,0,\"\"",
+               MQTT_SCHEME, MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD); }
 HAL_StatusTypeDef MQTTAT_SetMqttConnectionConfig(void)
+{ return Start(KIND_OK, MQTT_AT_COMMAND_TIMEOUT_MS, "AT+MQTTCONNCFG=0,%u,0,\"\",\"\",0,0",
+               MQTT_KEEPALIVE_SECONDS); }
+HAL_StatusTypeDef MQTTAT_ConnectMqtt(void)
+{ return Start(KIND_CONNECT, MQTT_AT_CONNECT_TIMEOUT_MS, "AT+MQTTCONN=0,\"%s\",%u,0",
+               MQTT_BROKER_HOST, MQTT_BROKER_PORT); }
+HAL_StatusTypeDef MQTTAT_BeginPublish(void)
+{ return Start(KIND_PUBLISH, MQTT_AT_PUBLISH_TIMEOUT_MS,
+               "AT+MQTTPUBRAW=0,\"%s\",%u,%u,%u",
+               MQTT_TOPIC, CAN_BLOCK_TX_SIZE, MQTT_PUBLISH_QOS, MQTT_PUBLISH_RETAIN); }
+HAL_StatusTypeDef MQTTAT_SendPayload(uint8_t *data, uint16_t length)
 {
-    return MQTTAT_StartCommand(
-        EXPECT_OK,
-        MQTTAT_COMMAND_TIMEOUT,
-        "AT+MQTTCONNCFG=0,%u,0,\"\",\"\",0,0",
-        MQTT_KEEPALIVE_SECONDS);
+    HAL_StatusTypeDef status;
+    if ((s_result != MQTTAT_RESULT_PROMPT) || (length != CAN_BLOCK_TX_SIZE))
+        return HAL_ERROR;
+    s_tx_done = 0U;
+    s_tx_error = 0U;
+    s_dma_active = 1U;
+    s_phase = PHASE_DMA;
+    s_result = MQTTAT_RESULT_PENDING;
+    s_started = HAL_GetTick();
+    status = HAL_UART_Transmit_DMA(&huart1, data, length);
+    if (status != HAL_OK) { s_dma_active = 0U; Finish(MQTTAT_RESULT_ERROR); }
+    return status;
 }
 
-HAL_StatusTypeDef MQTTAT_ConnectMqtt(void)
-{
-    return MQTTAT_StartCommand(
-        EXPECT_MQTT_CONNECTED,
-        MQTTAT_MQTT_TIMEOUT,
-        "AT+MQTTCONN=0,\"%s\",%u,0",
-        MQTT_BROKER_HOST,
-        MQTT_BROKER_PORT);
-}
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *uart)
+{ if (uart == &huart1) s_tx_done = 1U; }
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *uart)
+{ if (uart == &huart1) s_tx_error = 1U; }

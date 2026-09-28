@@ -26,6 +26,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "can_user.h"
+#include "config.h"
 #include "mqtt_at.h"
 #include "state_user.h"
 
@@ -95,13 +96,14 @@ int main(void)
   MX_DMA_Init();
   MX_CAN_Init();
   MX_USART1_UART_Init();
-  
-  
-  
-
   /* USER CODE BEGIN 2 */
 
-  bufferInit();           
+  Buffer_Init();
+  if (huart1.Init.BaudRate != MQTT_AT_UART_BAUDRATE)
+  {
+      huart1.Init.BaudRate = MQTT_AT_UART_BAUDRATE;
+      if (HAL_UART_Init(&huart1) != HAL_OK) Error_Handler();
+  }
   
   
   if (MQTTAT_Init() != HAL_OK) {
@@ -205,4 +207,3 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
-

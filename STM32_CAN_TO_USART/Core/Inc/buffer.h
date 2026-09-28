@@ -1,63 +1,24 @@
 #ifndef BUFFER_H
 #define BUFFER_H
-
 #include <stdint.h>
+#include <config.h>
 
-#include "config.h"
+#define CAN_NO_BLOCK 0xFFU
 
-#define DLC_8 8u
+typedef struct { uint32_t id; uint8_t data[CAN_FRAME_DATA_SIZE]; } CAN_Frame_t;
+typedef struct { CAN_Frame_t frame[CAN_FRAME_COUNT]; uint16_t block_seq; } CAN_Block_t;
 
+extern CAN_Block_t can_block[CAN_BUFFER_COUNT];
+extern volatile uint8_t write_idx;
+extern volatile uint8_t latest_ready_idx;
+extern volatile uint16_t global_block_seq;
+extern volatile int8_t tx_block_idx;
+extern volatile uint32_t can_invalid_block_count;
+extern volatile uint32_t can_tx_collision_count;
 
-typedef enum {
-    BUFFER_READY=0,
-    BUFFER_FILLING,
-    BUFFER_SENDING,
-    BUFFER_EMPTY
-} buffer_state_t;
-
-/*
-每个can帧放入1个frame_t结构体中。
-
-每30个frame_t结构体放入block_t结构体中，
-block_t是usart单次发送的数据，大小接近mqtt单次上传的上限
-
-每4个block_t结构体放入buffer_t结构体中，
-也就是BMS每0.1s的一次完整can发送的118个can帧将会放入同一个buffer里面
-*/
-
-typedef struct{
-    uint32_t id;
-    uint8_t data[FRAME_LENGTH];
-}frame_t;
-
-typedef struct{
-    frame_t frame[FRAME_COUNT];
-}block_t;
-
-typedef struct buffer_t{
-    block_t block[BLOCK_COUNT];
-    buffer_state_t state;
-    struct buffer_t *next_buffer;
-}buffer_t;
-
-typedef struct{
-    buffer_t *current_buffer;
-    uint8_t block_index;
-    uint8_t frame_index;
-}buffer_pointer_t;
-
-extern buffer_pointer_t g_buffer_write;
-extern buffer_pointer_t g_buffer_read;
-
-
-
-void finalizeBuffer(buffer_t *buffer);
-
-void bufferInit(void);
-
-buffer_state_t getBufferState(buffer_t *buffer);
-
-void updateFrame(buffer_pointer_t *pointer);
-
-
-#endif //BUFFER_H
+void Buffer_Init(void);
+void Buffer_ReceiveFrame(uint32_t id, const uint8_t data[8]);
+uint8_t Buffer_HasNew(uint32_t after_generation);
+uint8_t Buffer_PinLatest(uint32_t after_generation, uint8_t *index, uint32_t *generation);
+void Buffer_Unpin(void);
+#endif
