@@ -21,4 +21,6 @@ void Buffer_ReceiveFrame(uint32_t id, const uint8_t data[8]);
 uint8_t Buffer_HasNew(uint32_t after_generation);
 uint8_t Buffer_PinLatest(uint32_t after_generation, uint8_t *index, uint32_t *generation);
 void Buffer_Unpin(void);
+/* Copy under a short pin; acquisition is free to overwrite during UART transmission. */
+uint8_t Buffer_CopyLatest(uint32_t after_generation, uint8_t *data, uint32_t *generation);
 #endif

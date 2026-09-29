@@ -69,7 +69,7 @@ void Buffer_ReceiveFrame(uint32_t id, const uint8_t data[8])
         frame->id = id;
         memcpy(frame->data, data, CAN_FRAME_DATA_SIZE);
     }
-    s_count++;
+    if (s_count < CAN_FRAME_COUNT) s_count++;
     if (id == TAIL_CAN_ID)
     {
         if ((s_discard == 0U) && (s_count == CAN_FRAME_COUNT))
@@ -118,4 +118,14 @@ void Buffer_Unpin(void)
     __disable_irq();
     tx_block_idx = -1;
     __set_PRIMASK(irq);
+}
+
+uint8_t Buffer_CopyLatest(uint32_t after_generation, uint8_t *data, uint32_t *generation)
+{
+    uint8_t index;
+    if ((data == NULL) ||
+        (Buffer_PinLatest(after_generation, &index, generation) == 0U)) return 0U;
+    memcpy(data, &can_block[index], CAN_BLOCK_TX_SIZE);
+    Buffer_Unpin();
+    return 1U;
 }

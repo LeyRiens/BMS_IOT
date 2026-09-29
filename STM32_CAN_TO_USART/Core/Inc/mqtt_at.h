@@ -11,6 +11,8 @@ MQTTAT_Result_t MQTTAT_GetResult(void);
 void MQTTAT_ClearResult(void);
 uint8_t MQTTAT_IsConnected(void);
 uint8_t MQTTAT_TakeTxDone(void);
+/* Local abort cannot cancel an unfinished RAW transaction on the ESP. */
+uint8_t MQTTAT_NeedsEspReset(void);
 HAL_StatusTypeDef MQTTAT_Abort(void);
 HAL_StatusTypeDef MQTTAT_Test(void);
 HAL_StatusTypeDef MQTTAT_SetWifiModeStation(void);
@@ -18,6 +20,6 @@ HAL_StatusTypeDef MQTTAT_JoinWifi(void);
 HAL_StatusTypeDef MQTTAT_SetMqttUserConfig(void);
 HAL_StatusTypeDef MQTTAT_SetMqttConnectionConfig(void);
 HAL_StatusTypeDef MQTTAT_ConnectMqtt(void);
-HAL_StatusTypeDef MQTTAT_BeginPublish(void);
+HAL_StatusTypeDef MQTTAT_BeginPublish(uint16_t length);
 HAL_StatusTypeDef MQTTAT_SendPayload(uint8_t *data, uint16_t length);
 #endif

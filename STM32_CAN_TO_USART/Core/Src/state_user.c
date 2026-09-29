@@ -5,7 +5,7 @@
 #include "mqtt_at.h"
 
 typedef HAL_StatusTypeDef (*Command_t)(void);
-typedef enum { STARTUP, ONLINE, WAIT_PROMPT, SENDING, WAIT_RESULT, CONFIG_REQUIRED } State_t;
+typedef enum { STARTUP, ONLINE, WAIT_PROMPT, SENDING, WAIT_RESULT, CONFIG_REQUIRED, ESP_RESET_REQUIRED } State_t;
 static const Command_t s_commands[] = {
     MQTTAT_Test, MQTTAT_SetWifiModeStation, MQTTAT_JoinWifi,
     MQTTAT_SetMqttUserConfig, MQTTAT_SetMqttConnectionConfig, MQTTAT_ConnectMqtt
@@ -13,17 +13,18 @@ static const Command_t s_commands[] = {
 uint32_t g_state_user_error_count;
 static State_t s_state;
 static uint8_t s_command_index;
-static uint32_t s_last_generation;
+static uint32_t s_last_attempted_generation;
 static uint32_t s_retry_at;
+static uint8_t s_tx_snapshot[CAN_BLOCK_TX_SIZE];
+static uint32_t s_snapshot_generation;
 
 static void Restart(void)
 {
     if (MQTTAT_Abort() != HAL_OK) Error_Handler();
-    Buffer_Unpin();
     g_state_user_error_count++;
     s_command_index = 0U;
     s_retry_at = HAL_GetTick() + MQTT_STARTUP_RETRY_MS;
-    s_state = STARTUP;
+    s_state = (MQTTAT_NeedsEspReset() != 0U) ? ESP_RESET_REQUIRED : STARTUP;
     (void)LED_SetBlink(&Error_LED, MQTT_ERROR_BLINK_MS);
     LED_SetOff(&NET_State_LED);
 }
@@ -31,7 +32,7 @@ static void Restart(void)
 void StateUser_Init(void)
 {
     g_state_user_error_count = 0U;
-    s_last_generation = 0U;
+    s_last_attempted_generation = 0U;
     s_retry_at = 0U;
     s_command_index = 0U;
     s_state = STARTUP;
@@ -52,19 +53,26 @@ void StateUser_Init(void)
 void StateUser_Poll(void)
 {
     MQTTAT_Result_t result = MQTTAT_GetResult();
-    uint32_t generation;
-    uint8_t index;
     LED_Update(&Error_LED);
 
     if ((s_state == SENDING) || (s_state == WAIT_RESULT))
     {
         if (MQTTAT_TakeTxDone() != 0U)
         {
-            Buffer_Unpin();
             s_state = WAIT_RESULT;
         }
     }
     if (s_state == CONFIG_REQUIRED) return;
+    if (s_state == ESP_RESET_REQUIRED)
+    {
+        /* Only an observed ESP boot-ready response can release this lock. */
+        if (MQTTAT_NeedsEspReset() == 0U)
+        {
+            s_retry_at = HAL_GetTick() + MQTT_STARTUP_RETRY_MS;
+            s_state = STARTUP;
+        }
+        return;
+    }
     if (s_state == STARTUP)
     {
         if ((int32_t)(HAL_GetTick() - s_retry_at) < 0) return;
@@ -88,9 +96,11 @@ void StateUser_Poll(void)
     if (s_state == ONLINE)
     {
         if (MQTTAT_IsConnected() == 0U) { Restart(); return; }
-        if (Buffer_HasNew(s_last_generation) != 0U)
+        /* Latest-only: publish whenever idle, without a periodic send deadline. */
+        if (Buffer_CopyLatest(s_last_attempted_generation, s_tx_snapshot,
+                              &s_snapshot_generation) != 0U)
         {
-            if (MQTTAT_BeginPublish() == HAL_OK) s_state = WAIT_PROMPT;
+            if (MQTTAT_BeginPublish(CAN_BLOCK_TX_SIZE) == HAL_OK) s_state = WAIT_PROMPT;
             else Restart();
         }
         return;
@@ -100,10 +110,11 @@ void StateUser_Poll(void)
         if ((result == MQTTAT_RESULT_ERROR) || (result == MQTTAT_RESULT_TIMEOUT))
         { Restart(); return; }
         if (result != MQTTAT_RESULT_PROMPT) return;
-        if (Buffer_PinLatest(s_last_generation, &index, &generation) == 0U) return;
-        if (MQTTAT_SendPayload((uint8_t *)&can_block[index], CAN_BLOCK_TX_SIZE) != HAL_OK)
+        /* Prefer a newer block at the prompt; retain the reserved snapshot if none exists. */
+        (void)Buffer_CopyLatest(s_snapshot_generation, s_tx_snapshot, &s_snapshot_generation);
+        if (MQTTAT_SendPayload(s_tx_snapshot, CAN_BLOCK_TX_SIZE) != HAL_OK)
         { Restart(); return; }
-        s_last_generation = generation;
+        s_last_attempted_generation = s_snapshot_generation;
         s_state = SENDING;
         return;
     }

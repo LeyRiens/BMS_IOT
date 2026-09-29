@@ -23,7 +23,7 @@
 /* ESP-AT UART, parser and transaction timing. */
 #define MQTT_AT_UART_BAUDRATE   460800U
 #define MQTT_AT_USART_IRQ_PRIORITY 1U
-#define MQTT_AT_RX_SIZE         256U
+#define MQTT_AT_RX_SIZE         1024U
 #define MQTT_AT_LINE_SIZE       128U
 #define MQTT_AT_COMMAND_SIZE    256U
 #define MQTT_AT_COMMAND_TIMEOUT_MS 3000U
