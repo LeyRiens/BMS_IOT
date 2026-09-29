@@ -6,6 +6,8 @@
 
 typedef HAL_StatusTypeDef (*Command_t)(void);
 typedef enum { STARTUP, ONLINE, WAIT_PROMPT, SENDING, WAIT_RESULT, CONFIG_REQUIRED, ESP_RESET_REQUIRED } State_t;
+typedef enum { ERROR_LED_OFF, ERROR_LED_RETRY, ERROR_LED_CONFIG, ERROR_LED_RESET } ErrorLedCode_t;
+typedef enum { ERROR_PHASE_ON, ERROR_PHASE_GAP, ERROR_PHASE_PAUSE } ErrorLedPhase_t;
 static const Command_t s_commands[] = {
     MQTTAT_Test, MQTTAT_SetWifiModeStation, MQTTAT_JoinWifi,
     MQTTAT_SetMqttUserConfig, MQTTAT_SetMqttConnectionConfig, MQTTAT_ConnectMqtt
@@ -17,6 +19,97 @@ static uint32_t s_last_attempted_generation;
 static uint32_t s_retry_at;
 static uint8_t s_tx_snapshot[CAN_BLOCK_TX_SIZE];
 static uint32_t s_snapshot_generation;
+static uint32_t s_can_led_generation;
+static uint32_t s_can_led_deadline;
+static uint8_t s_can_led_active;
+static ErrorLedCode_t s_error_led_code;
+static ErrorLedPhase_t s_error_led_phase;
+static uint8_t s_error_led_pulses_left;
+static uint32_t s_error_led_deadline;
+
+static uint8_t ErrorLedPulseCount(ErrorLedCode_t code)
+{
+    if (code == ERROR_LED_CONFIG) return ERROR_LED_CONFIG_PULSES;
+    if (code == ERROR_LED_RESET) return ERROR_LED_RESET_PULSES;
+    return ERROR_LED_RETRY_PULSES;
+}
+
+static uint32_t ErrorLedPause(ErrorLedCode_t code)
+{
+    return (code == ERROR_LED_RETRY) ? ERROR_LED_RETRY_PAUSE_MS : ERROR_LED_CODE_PAUSE_MS;
+}
+
+static void ErrorLedSet(ErrorLedCode_t code)
+{
+    if (s_error_led_code == code) return;
+    s_error_led_code = code;
+    s_error_led_pulses_left = 0U;
+    if (code == ERROR_LED_OFF)
+    {
+        LED_SetOff(&Error_LED);
+        return;
+    }
+    s_error_led_pulses_left = ErrorLedPulseCount(code);
+    s_error_led_phase = ERROR_PHASE_ON;
+    LED_SetOn(&Error_LED);
+    s_error_led_deadline = HAL_GetTick() + ERROR_LED_PULSE_MS;
+}
+
+static void ErrorLedPoll(void)
+{
+    uint32_t now = HAL_GetTick();
+    if ((s_error_led_code == ERROR_LED_OFF) ||
+        ((int32_t)(now - s_error_led_deadline) < 0)) return;
+
+    if (s_error_led_phase == ERROR_PHASE_ON)
+    {
+        LED_SetOff(&Error_LED);
+        if (s_error_led_pulses_left > 1U)
+        {
+            s_error_led_pulses_left--;
+            s_error_led_phase = ERROR_PHASE_GAP;
+            s_error_led_deadline = now + ERROR_LED_GAP_MS;
+        }
+        else
+        {
+            s_error_led_pulses_left = 0U;
+            s_error_led_phase = ERROR_PHASE_PAUSE;
+            s_error_led_deadline = now + ErrorLedPause(s_error_led_code);
+        }
+    }
+    else if (s_error_led_phase == ERROR_PHASE_GAP)
+    {
+        LED_SetOn(&Error_LED);
+        s_error_led_phase = ERROR_PHASE_ON;
+        s_error_led_deadline = now + ERROR_LED_PULSE_MS;
+    }
+    else
+    {
+        s_error_led_pulses_left = ErrorLedPulseCount(s_error_led_code);
+        LED_SetOn(&Error_LED);
+        s_error_led_phase = ERROR_PHASE_ON;
+        s_error_led_deadline = now + ERROR_LED_PULSE_MS;
+    }
+}
+
+static void CanLedPoll(void)
+{
+    uint32_t generation = Buffer_GetGeneration();
+    uint32_t now = HAL_GetTick();
+    if (generation != s_can_led_generation)
+    {
+        s_can_led_generation = generation;
+        s_can_led_active = 1U;
+        s_can_led_deadline = now + CAN_LED_PULSE_MS;
+        LED_SetOn(&CAN_State_LED);
+    }
+    else if ((s_can_led_active != 0U) &&
+             ((int32_t)(now - s_can_led_deadline) >= 0))
+    {
+        s_can_led_active = 0U;
+        LED_SetOff(&CAN_State_LED);
+    }
+}
 
 static void Restart(void)
 {
@@ -25,7 +118,7 @@ static void Restart(void)
     s_command_index = 0U;
     s_retry_at = HAL_GetTick() + MQTT_STARTUP_RETRY_MS;
     s_state = (MQTTAT_NeedsEspReset() != 0U) ? ESP_RESET_REQUIRED : STARTUP;
-    (void)LED_SetBlink(&Error_LED, MQTT_ERROR_BLINK_MS);
+    ErrorLedSet((s_state == ESP_RESET_REQUIRED) ? ERROR_LED_RESET : ERROR_LED_RETRY);
     LED_SetOff(&NET_State_LED);
 }
 
@@ -36,8 +129,12 @@ void StateUser_Init(void)
     s_retry_at = 0U;
     s_command_index = 0U;
     s_state = STARTUP;
+    s_can_led_generation = Buffer_GetGeneration();
+    s_can_led_active = 0U;
+    s_error_led_code = ERROR_LED_OFF;
     LED_SetOff(&Error_LED);
     LED_SetOff(&NET_State_LED);
+    LED_SetOff(&CAN_State_LED);
     if ((SSID[0] == '\0') || (PASSWORD[0] == '\0') ||
         (HEAD_CAN_ID > 0x7FFU) || (TAIL_CAN_ID > 0x7FFU) ||
         (HEAD_CAN_ID == TAIL_CAN_ID) || (MQTT_BROKER_HOST[0] == '\0') ||
@@ -46,14 +143,15 @@ void StateUser_Init(void)
          (CAN_BLOCK_TX_SIZE + sizeof(MQTT_TOPIC) + 8U)))
     {
         s_state = CONFIG_REQUIRED;
-        (void)LED_SetBlink(&Error_LED, MQTT_ERROR_BLINK_MS);
+        ErrorLedSet(ERROR_LED_CONFIG);
     }
 }
 
 void StateUser_Poll(void)
 {
     MQTTAT_Result_t result = MQTTAT_GetResult();
-    LED_Update(&Error_LED);
+    CanLedPoll();
+    ErrorLedPoll();
 
     if ((s_state == SENDING) || (s_state == WAIT_RESULT))
     {
@@ -70,6 +168,7 @@ void StateUser_Poll(void)
         {
             s_retry_at = HAL_GetTick() + MQTT_STARTUP_RETRY_MS;
             s_state = STARTUP;
+            ErrorLedSet(ERROR_LED_RETRY);
         }
         return;
     }
@@ -89,7 +188,7 @@ void StateUser_Poll(void)
         {
             s_state = ONLINE;
             LED_SetOn(&NET_State_LED);
-            LED_SetOff(&Error_LED);
+            ErrorLedSet(ERROR_LED_OFF);
         }
         return;
     }

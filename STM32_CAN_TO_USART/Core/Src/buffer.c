@@ -85,6 +85,16 @@ void Buffer_ReceiveFrame(uint32_t id, const uint8_t data[8])
     else if (s_count >= CAN_FRAME_COUNT) s_discard = 1U;
 }
 
+uint32_t Buffer_GetGeneration(void)
+{
+    uint32_t generation;
+    uint32_t irq = __get_PRIMASK();
+    __disable_irq();
+    generation = s_generation;
+    __set_PRIMASK(irq);
+    return generation;
+}
+
 uint8_t Buffer_HasNew(uint32_t after_generation)
 {
     uint8_t result;

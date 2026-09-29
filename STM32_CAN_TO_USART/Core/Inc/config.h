@@ -32,7 +32,16 @@
 #define MQTT_AT_PUBLISH_TIMEOUT_MS 15000U
 #define MQTT_AT_COMMAND_TX_TIMEOUT_MS 1000U
 #define MQTT_STARTUP_RETRY_MS   1000U
-#define MQTT_ERROR_BLINK_MS     500U
+
+/* Status LED pulse timing. Error codes repeat after their quiet interval. */
+#define CAN_LED_PULSE_MS        60U
+#define ERROR_LED_PULSE_MS      120U
+#define ERROR_LED_GAP_MS        120U
+#define ERROR_LED_RETRY_PAUSE_MS 900U
+#define ERROR_LED_CODE_PAUSE_MS 1000U
+#define ERROR_LED_RETRY_PULSES  1U
+#define ERROR_LED_CONFIG_PULSES 3U
+#define ERROR_LED_RESET_PULSES  2U
 
 /* CAN wire contract. Keep the sizes in sync with the 1514-byte block layout. */
 /* Values above 0x7FF disable capture until IDs are supplied. */
