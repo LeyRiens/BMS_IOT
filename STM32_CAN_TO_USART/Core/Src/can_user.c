@@ -67,9 +67,12 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *can)
         frame->id = header.StdId;
         frame->dlc = (uint8_t)header.DLC;
 
-        if (header.StdId == 0x1A0U) {
+        if (header.StdId == 0x1A0U) 
+        {
             finalizeBuffer(write->current_buffer);
-        } else {
+        } 
+        else 
+        {
             updateFrame(write);
         }
     }

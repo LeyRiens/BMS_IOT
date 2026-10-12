@@ -40,7 +40,7 @@ void updateBlock(buffer_pointer_t *pointer)
    
     if(pointer->block_index >= BLOCK_COUNT)
     {
-        pointer->block_index = 0;
+        pointer->block_index = 0u;
     }
 }
 
@@ -50,7 +50,7 @@ void updateFrame(buffer_pointer_t *pointer)
     
     if(pointer->frame_index >= FRAME_COUNT)
     {
-        pointer->frame_index = 0;
+        pointer->frame_index = 0u;
        
         updateBlock(pointer);
     }

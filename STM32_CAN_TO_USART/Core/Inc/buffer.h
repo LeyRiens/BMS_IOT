@@ -11,9 +11,9 @@
 
 
 typedef enum {
-    BUFFER_READY=0,
-    BUFFER_USING,
-    BUFFER_EMPTY
+    BUFFER_READY=0,    // 写满了，等读取传串口
+    BUFFER_USING,      // 正在被写(或正在被读)
+    BUFFER_EMPTY       // 空闲（IDLE）
 } buffer_state_t;
 
 /*
@@ -43,9 +43,9 @@ typedef struct buffer_t{
 }buffer_t;
 
 typedef struct{
-    buffer_t *current_buffer;
-    uint8_t block_index;
-    uint8_t frame_index;
+    buffer_t *current_buffer;   // 正在哪个 buffer
+    uint8_t block_index;        // 第几个 block
+    uint8_t frame_index;        // 第几个 frame
 }buffer_pointer_t;
 
 extern buffer_pointer_t g_buffer_write;
