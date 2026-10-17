@@ -2,12 +2,7 @@
 #define BUFFER_H
 
 #include <stdint.h>
-
-#define FRAME_LENGTH 8
-#define FRAME_COUNT 32
-#define BLOCK_COUNT 4
-#define BUFFER_COUNT 4
-
+#include "config.h"
 
 
 typedef enum {
@@ -19,7 +14,7 @@ typedef enum {
 /*
 每个can帧放入1个frame_t结构体中。
 
-每30个frame_t结构体放入block_t结构体中，
+每29个frame_t结构体放入block_t结构体中，
 block_t是usart单次发送的数据，大小接近mqtt单次上传的上限
 
 每4个block_t结构体放入buffer_t结构体中，
@@ -28,7 +23,6 @@ block_t是usart单次发送的数据，大小接近mqtt单次上传的上限
 
 typedef struct{
     uint32_t id;
-    uint8_t dlc;
     uint8_t data[FRAME_LENGTH];
 }frame_t;
 

@@ -94,6 +94,9 @@ int main(void)
   MX_CAN_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  
+  bufferInit();
+  
   if (CAN_UserInit() != HAL_OK)
   {
     Error_Handler();
